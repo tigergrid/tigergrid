@@ -30,7 +30,9 @@
 		"format:check": "prettier --check .",
 		"lint": "eslint .",
 		"precommit": "bun run format:check && bun run check && bun run lint && bun run test",
-		"prepare": "husky"
+		"prepare": "husky",
+		"typecheck": "tsgo --noEmit",
+		"typecheck:legacy": "tsc --noEmit"
 	},
 	"devDependencies": {
 		"@eslint/js": "^10.0.1",
@@ -41,6 +43,7 @@
 		"husky": "^9.1.7",
 		"prettier": "^3.9.10",
 		"@typescript/native": "npm:typescript@^7.0.2",
+		"@typescript/native-preview": "beta",
 		"typescript": "npm:@typescript/typescript6@^6.0.2",
 		"typescript-eslint": "^8.72.1"
 	}
