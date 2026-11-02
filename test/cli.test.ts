@@ -175,6 +175,12 @@ describe('argument errors', () => {
 		expect(result.stdout).toContain('Usage: tigergrid [options]');
 	});
 
+	test('--interactive without a terminal exits 1 instead of drawing into a pipe', () => {
+		const result = cli('-i', ...FIXTURE_ARGS);
+		expect(result.code).toBe(1);
+		expect(result.stderr).toContain('tigergrid: --interactive needs a terminal');
+	});
+
 	test('an unknown tool exits 1', () => {
 		expect(cli('-t', 'cursor').code).toBe(1);
 	});

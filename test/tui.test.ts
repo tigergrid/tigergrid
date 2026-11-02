@@ -1,19 +1,50 @@
-// End-to-end: run the compiled spike on a real pseudo-terminal (Bun.Terminal) and read what a
-// user would see through a headless xterm.js. The pty makes raw mode, SIGWINCH and Ctrl+C
-// behave as in a real terminal; the emulator lets checks read rendered text, because Ink's
-// incremental rendering only rewrites the cells that changed.
+// End-to-end: run `tigergrid -i` against the fixtures on a real pseudo-terminal (Bun.Terminal)
+// and read what a user would see through a headless xterm.js. The pty makes raw mode, SIGWINCH
+// and Ctrl+C behave as in a real terminal; the emulator lets checks read rendered text, because
+// Ink's incremental rendering only rewrites the cells that changed.
 //
-// Runs the binary for this machine (dist/spike-<os>-<arch>), or TUI_BINARY if set; skips
-// when neither exists, so `bun test` at the repo root passes before `bun build.ts` has run.
+// Runs from source; with TIGERGRID_TEST_NODE=1, the Node build; with TIGERGRID_TUI_BINARY, that
+// compiled binary (CI's binaries job sets it on each platform).
 import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from 'bun:test';
-import { existsSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Terminal as Screen } from '@xterm/headless';
+import type { JsonDay } from '../types/cli';
+import { buildGitFixture } from './helpers/git-fixture';
 
 const COLS = 100;
-const ROWS = 30;
-const BINARY =
-	process.env.TUI_BINARY ?? join(import.meta.dir, '..', 'dist', `spike-${process.platform}-${process.arch}`);
+const ROWS = 32;
+/** The TUI as the other end-to-end tests run it: from source, the Node build, or a compiled binary. */
+function command(): string[] {
+	if (process.env.TIGERGRID_TUI_BINARY) return [process.env.TIGERGRID_TUI_BINARY];
+	return process.env.TIGERGRID_TEST_NODE === '1' ? ['node', 'dist/node/cli.js'] : ['bun', 'src/cli.ts'];
+}
+const COMMAND = command();
+
+// The same fixtures and 520-week window as test/cli.test.ts; --theme skips the terminal
+// colour question, which the headless emulator doesn't answer.
+const git = buildGitFixture();
+const out = mkdtempSync(join(tmpdir(), 'tigergrid-tui-'));
+afterAll(() => {
+	git.cleanup();
+	rmSync(out, { recursive: true, force: true });
+});
+const ARGS = [
+	'-i',
+	'--theme',
+	'dark',
+	'-w',
+	'520',
+	'--claude-dir',
+	'test/fixtures/claude',
+	'--codex-dir',
+	'test/fixtures/codex',
+	'--git-root',
+	git.root,
+	'--author',
+	'dev@acme.test'
+];
 
 // c_lflag bits; the values differ between Linux and macOS.
 const LFLAG = process.platform === 'darwin' ? { echo: 0x8, icanon: 0x100 } : { echo: 0o10, icanon: 0o2 };
@@ -26,7 +57,7 @@ const ENTER_ALT = '\x1b[?1049h';
 const LEAVE_ALT = '\x1b[?1049l';
 
 /**
- * One run of the binary on a fresh pty, its output mirrored into a headless xterm.
+ * One run of the TUI on a fresh pty, its output mirrored into a headless xterm.
  */
 class Session {
 	readonly started = performance.now();
@@ -52,7 +83,7 @@ class Session {
 			}
 		});
 		const { CI: _, ...env } = process.env;
-		this.proc = Bun.spawn([BINARY], { terminal: this.terminal, env: { ...env, COLORTERM: 'truecolor' } });
+		this.proc = Bun.spawn([...COMMAND, ...ARGS], { terminal: this.terminal, env: { ...env, COLORTERM: 'truecolor' } });
 	}
 
 	/**
@@ -164,7 +195,20 @@ class Session {
 	}
 }
 
-describe.skipIf(!existsSync(BINARY))(`spike TUI (${BINARY})`, () => {
+/**
+ * The headline row of the graph panel, e.g. `8 prompts in the last 520 weeks · …`.
+ *
+ * @returns the first screen line containing "in the last", or ''.
+ * Called by: tests.
+ * Calls: Session.text.
+ */
+const headline = (session: Session) =>
+	session
+		.text()
+		.split('\n')
+		.find((line) => line.includes('in the last')) ?? '';
+
+describe(`tigergrid -i (${COMMAND.join(' ')})`, () => {
 	describe('a full session', () => {
 		let session: Session;
 		beforeAll(() => {
@@ -172,11 +216,12 @@ describe.skipIf(!existsSync(BINARY))(`spike TUI (${BINARY})`, () => {
 		});
 		afterAll(() => session.close());
 
-		test('first frame', async () => {
-			await session.waitFor('tigergrid · ink spike');
-			const elapsed = await session.waitFor('/quit');
-			console.log(`first frame after ${elapsed.toFixed(0)} ms`);
-			expect(session.text()).toContain(`${COLS}x${ROWS}`);
+		test('first frame: the fixtures load and the graph draws', async () => {
+			const elapsed = await session.waitFor('8 prompts in the last 520 weeks');
+			console.log(`first frame with data after ${elapsed.toFixed(0)} ms`);
+			expect(session.text()).toContain('tigergrid');
+			// 100 columns minus border and padding fit 46 two-column weeks after the weekday labels.
+			expect(session.text()).toContain('the graph shows the last 46 of 520 weeks');
 		});
 
 		test('fullscreen and raw mode while running', () => {
@@ -185,31 +230,63 @@ describe.skipIf(!existsSync(BINARY))(`spike TUI (${BINARY})`, () => {
 			expect(session.cooked()).toBe(false);
 		});
 
+		test('the graph and stats are the same as the CLI prints', () => {
+			const text = session.text();
+			expect(text).toContain('Mon ');
+			expect(text).toContain('active days');
+			expect(text).toContain('5 commits · 3 AI-assisted (60%)');
+			expect(text).toContain('top projects');
+			expect(text).toContain('acme/api');
+			expect(session.raw()).toContain('38;2;'); // 24-bit colour from the PALETTES hex values
+		});
+
+		test('→ steps to the next metric', async () => {
+			await session.send('\x1b[C');
+			await session.waitFor('agent sessions in the last 520 weeks');
+		});
+
+		test('t switches the tool', async () => {
+			await session.send('t');
+			await session.waitFor('· claude ·');
+			expect(headline(session)).toMatch(/weeks · Claude Code(?! \+)/);
+		});
+
 		test('/ lists commands, Tab completes, Enter runs', async () => {
 			await session.send('/');
 			await session.waitFor('› /');
-			// once in the help view, once in the suggestion list
-			expect(session.text().split('/scan').length - 1).toBeGreaterThanOrEqual(2);
-			await session.send('ta');
+			expect(session.text()).toContain('/metric <name>');
+			await session.send('me');
 			await session.send('\t');
-			await session.waitFor('› /table');
+			await session.waitFor('› /metric ');
+			await session.send('prompts,sessions,ai');
 			await session.send('\r');
-			await session.waitFor('GRID-41');
-			expect(session.text()).toContain('ran /table');
+			await session.waitFor('AI-assisted commits in the last 520 weeks');
+			expect(headline(session)).toContain('· Claude Code + git');
 		});
 
-		test('resize re-lays out', async () => {
-			session.resize(72, 20);
-			await session.waitFor('72x20');
-			expect(session.text()).toContain('…'); // the table subject truncates
+		test('/svg writes the card for what is shown', async () => {
+			const path = join(out, 'tui.svg');
+			await session.send(`/svg ${path}`);
+			await session.send('\r');
+			await session.waitFor(`wrote ${path}`);
+			const svg = readFileSync(path, 'utf8');
+			expect(svg).toContain('Agent activity · Claude Code + git');
 		});
 
-		test('grid fits the new width in truecolor', async () => {
-			await session.send('/grid');
+		test('/json writes the per-day rows', async () => {
+			const path = join(out, 'tui.json');
+			await session.send(`/json ${path}`);
 			await session.send('\r');
-			await session.waitFor('weeks · prompts');
-			expect(session.text()).toContain('32 weeks'); // (72 - 4 border - 4) / 2
-			expect(session.raw()).toContain('38;2;'); // 24-bit SGR from the PALETTES hex values
+			await session.waitFor(`wrote ${path}`);
+			// Our own --json shape, which types/cli.ts defines.
+			const rows = JSON.parse(readFileSync(path, 'utf8')) as JsonDay[];
+			expect(rows.map((row) => row.date)).toContain('2026-09-08');
+		});
+
+		test('resize re-fits the graph', async () => {
+			session.resize(72, 28);
+			// Three bars and a gap per week: (72 - 4 - 4) / 4.
+			await session.waitFor('the graph shows the last 16 of 520 weeks');
 		});
 
 		test('a pasted newline does not submit', async () => {
@@ -220,11 +297,13 @@ describe.skipIf(!existsSync(BINARY))(`spike TUI (${BINARY})`, () => {
 			await session.waitFor('unknown command: /nope');
 		});
 
-		test('timer-driven redraws (spinner + progress bar)', async () => {
-			await session.send('/scan');
-			await session.send('\r');
-			await session.waitFor('scanning transcripts');
-			await session.waitFor('scan done');
+		test('? shows the keys and commands, ? again closes them', async () => {
+			await session.send('?');
+			await session.waitFor('esc or ? closes this');
+			await session.waitFor('/quit');
+			expect(session.text()).toMatch(/\/svg \[file\] +--svg /);
+			await session.send('?');
+			await session.waitFor('the graph shows the last 16 of 520 weeks');
 		});
 
 		test('ctrl+c exits 0 and restores the terminal', async () => {
@@ -234,7 +313,6 @@ describe.skipIf(!existsSync(BINARY))(`spike TUI (${BINARY})`, () => {
 			expect(raw.lastIndexOf(LEAVE_ALT)).toBeGreaterThan(raw.lastIndexOf(ENTER_ALT));
 			expect(raw.lastIndexOf('\x1b[?25h')).toBeGreaterThan(raw.lastIndexOf('\x1b[?25l')); // cursor shown
 			expect(session.screen.buffer.active.type).toBe('normal');
-			expect(session.text()).toContain('exited cleanly');
 			expect(session.cooked()).toBe(true);
 		});
 	});
@@ -243,20 +321,28 @@ describe.skipIf(!existsSync(BINARY))(`spike TUI (${BINARY})`, () => {
 		let session: Session;
 		afterAll(() => session.close());
 
-		test('/quit exits 0 and restores the terminal', async () => {
+		test('q exits 0 and restores the terminal', async () => {
 			session = new Session();
-			await session.waitFor('/quit');
-			await session.send('/quit');
-			await session.send('\r');
+			await session.waitFor('in the last 520 weeks');
+			await session.send('q');
 			expect(await session.exited()).toBe(0);
 			expect(session.screen.buffer.active.type).toBe('normal');
 			expect(session.cooked()).toBe(true);
 		});
 
+		test('/quit exits 0', async () => {
+			session.close();
+			session = new Session();
+			await session.waitFor('in the last 520 weeks');
+			await session.send('/quit');
+			await session.send('\r');
+			expect(await session.exited()).toBe(0);
+		});
+
 		test('SIGTERM restores the terminal', async () => {
 			session.close();
 			session = new Session();
-			await session.waitFor('/quit');
+			await session.waitFor('in the last 520 weeks');
 			session.proc.kill('SIGTERM');
 			await session.exited();
 			expect(session.proc.signalCode).toBe('SIGTERM');

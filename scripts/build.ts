@@ -4,15 +4,17 @@
 // `bun scripts/build.ts bun-linux-x64` for a subset (CI builds one per runner).
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
+import { DEFINE, ENTRYPOINT, PLUGINS } from './bundle';
 
-const TARGETS = ['bun-linux-x64', 'bun-linux-arm64', 'bun-darwin-arm64'];
+const TARGETS = ['bun-linux-x64', 'bun-linux-arm64', 'bun-darwin-arm64'] as const;
+type Target = (typeof TARGETS)[number];
 const OUT_DIR = 'dist';
 
 /**
  * Run a command and fail loudly with its stderr if it exits non-zero.
  *
  * @returns the command's trimmed stdout.
- * Called by: buildCommit, compile.
+ * Called by: buildCommit.
  * Calls: Bun.spawnSync.
  */
 function run(cmd: string[]): string {
@@ -37,25 +39,22 @@ function buildCommit(): string {
 /**
  * Compile the CLI for one target. The commit is baked in through `process.env.TIGERGRID_COMMIT`
  * (read by `--version`), and the binary ignores `.env` and `bunfig.toml` files in whatever
- * directory it runs from.
+ * directory it runs from. Uses the Bun.build API rather than `bun build`, because the
+ * react-devtools-core stub (scripts/bundle.ts) is a plugin.
  *
  * @returns the output path, e.g. `dist/tigergrid-linux-x64`.
  * Called by: module top level.
- * Calls: run.
+ * Calls: Bun.build.
  */
-function compile(target: string, commit: string): string {
+async function compile(target: Target, commit: string): Promise<string> {
 	const outfile = join(OUT_DIR, `tigergrid-${target.replace(/^bun-/, '')}`);
-	run([
-		'bun',
-		'build',
-		'src/cli.ts',
-		'--compile',
-		`--target=${target}`,
-		'--no-compile-autoload-dotenv',
-		'--no-compile-autoload-bunfig',
-		`--define=process.env.TIGERGRID_COMMIT=${JSON.stringify(commit)}`,
-		`--outfile=${outfile}`
-	]);
+	const result = await Bun.build({
+		entrypoints: [ENTRYPOINT],
+		compile: { target, outfile, autoloadDotenv: false, autoloadBunfig: false },
+		define: { ...DEFINE, 'process.env.TIGERGRID_COMMIT': JSON.stringify(commit) },
+		plugins: PLUGINS
+	});
+	if (!result.success) throw new AggregateError(result.logs, `build for ${target} failed`);
 	return outfile;
 }
 
@@ -72,16 +71,25 @@ async function sha256(path: string): Promise<string> {
 	return hasher.digest('hex');
 }
 
+/**
+ * Check that a command-line argument names a supported target.
+ *
+ * @returns true (narrowing the type) for one of TARGETS.
+ * Called by: module top level.
+ * Calls: nothing.
+ */
+const isTarget = (value: string): value is Target => TARGETS.some((target) => target === value);
+
 const requested = process.argv.slice(2);
-const unknown = requested.filter((target) => !TARGETS.includes(target));
+const unknown = requested.filter((target) => !isTarget(target));
 if (unknown.length) throw new Error(`unknown target(s): ${unknown.join(', ')}; supported: ${TARGETS.join(', ')}`);
-const targets = requested.length ? requested : TARGETS;
+const targets = requested.length ? requested.filter(isTarget) : TARGETS;
 
 mkdirSync(OUT_DIR, { recursive: true });
 const commit = buildCommit();
 const lines: string[] = [];
 for (const target of targets) {
-	const outfile = compile(target, commit);
+	const outfile = await compile(target, commit);
 	const name = outfile.slice(OUT_DIR.length + 1);
 	lines.push(`${await sha256(outfile)}  ${name}`);
 	console.log(`built ${outfile} (${commit})`);

@@ -16,6 +16,15 @@ With a comma list of metrics, each day becomes a run of bars, one per metric in 
 
 Run `bun start --help` for all flags.
 
+### Interactive
+
+```sh
+bun start -i                 # or: bun run tui, tigergrid -i
+bun start -i -m tokens -t codex   # the other flags set where it starts
+```
+
+`-i` opens a fullscreen TUI with the same graph, stats and exports. Keys switch what's shown: `← →` metric, `t` tool, `c` cells, `l` light/dark, `+ -` four weeks more or fewer, `g` git on/off, `s` / `j` write `out/tigergrid.svg` / `.json`, `r` rescan, `?` help, `q` quit. Type `/` for commands that mirror the flags: `/metric prompts,sessions,ai`, `/tool codex`, `/weeks 26` (or `fit`), `/cells wide`, `/theme light`, `/git off`, `/svg [file]`, `/json [file]`. When the window is wider than the terminal, the graph shows the most recent weeks that fit and the stats still cover the whole window. How it's built and tested: [docs/TUI.md](docs/TUI.md).
+
 ### Exports
 
 | Script            | Output                                                                                                      |

@@ -1,19 +1,15 @@
 #!/usr/bin/env node
-import { mkdir, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
-import type { JsonDay } from '../types/cli';
-import type { Day, Days, Tool } from '../types/days';
-import type { CellStyle, Grid, Metric, Summary, TerminalTheme, ToolFilter } from '../types/grid';
+import type { LoadOptions, SummaryLine } from '../types/cli';
+import type { CellStyle, Metric, TerminalTheme, ToolFilter } from '../types/grid';
 import { dayKey } from './days';
-import { buildGrid, fmt, gridStart, isMetric, isToolFilter, METRIC_LABEL, summarize } from './grid';
-import { renderBarsSvg, renderSvg } from './render/svg';
+import { gridStart, isMetric, isToolFilter } from './grid';
+import { loadSources } from './load';
+import { buildView, jsonRows, scopeOf, summaryLines, totalsLine, writeSvg } from './report';
 import { barsWidth, bold, cellWidth, dim, isCellStyle, renderBars, renderGrid } from './render/terminal';
 import { detectTheme, isTerminalTheme } from './render/theme';
-import { loadClaude } from './sources/claude';
-import { loadCodex } from './sources/codex';
-import { gitOutput, loadGit } from './sources/git';
 import pkg from '../package.json';
 
 const HELP = `TigerGrid — a contribution graph of your AI coding agents
@@ -33,6 +29,7 @@ Usage: tigergrid [options]
       --json            print per-day data as JSON instead of the graph
       --cells <style>   matrix | wide                                (default: matrix)
       --theme <name>    light | dark                                 (default: ask the terminal)
+  -i, --interactive     open the interactive TUI; the other flags set where it starts
   -v, --version         print the version and the commit it was built from
   -h, --help
 
@@ -40,8 +37,6 @@ Sources: Claude Code transcripts, Codex rollouts, and git repos under --git-root
 "tokens" counts fresh tokens (uncached input + cache writes + output); cache reads are excluded.
 "ai" counts commits carrying an agent Co-Authored-By trailer or a "Generated with" footer.
 A combined graph draws one bar per metric per day; its height is that metric's level.`;
-
-const TOOL_LABEL: Record<ToolFilter, string> = { all: 'Claude Code + Codex', claude: 'Claude Code', codex: 'Codex' };
 
 const { values: args } = parseArgs({
 	options: {
@@ -57,6 +52,7 @@ const { values: args } = parseArgs({
 		json: { type: 'boolean', default: false },
 		cells: { type: 'string', default: 'matrix' },
 		theme: { type: 'string' },
+		interactive: { type: 'boolean', short: 'i', default: false },
 		version: { type: 'boolean', short: 'v', default: false },
 		help: { type: 'boolean', short: 'h', default: false }
 	}
@@ -88,125 +84,26 @@ function die(message: string): never {
 }
 
 /**
- * Pick the git author filters: the `--author` flags if given, else the global
- * `git config user.email`, else no filter (all authors).
- *
- * @returns author patterns for `git log --author`.
- * Called by: main.
- * Calls: gitOutput (git config).
- */
-async function gitAuthors(): Promise<string[]> {
-	if (args.author?.length) return args.author;
-	const email = (await gitOutput(process.cwd(), ['config', 'user.email'])).trim();
-	return email ? [email] : [];
-}
-
-/**
- * Flatten one day's Sets and Maps into plain counts and objects for JSON output.
- *
- * @returns the `--json` row for that day.
- * Called by: printJson.
- * Calls: nothing.
- */
-const toJsonDay = (date: string, aggregate: Day): JsonDay => ({
-	date,
-	sessions: { claude: aggregate.sessions.claude.size, codex: aggregate.sessions.codex.size },
-	prompts: aggregate.prompts,
-	tokens: aggregate.tokens,
-	commits: aggregate.commits,
-	aiCommits: aggregate.aiCommits,
-	projects: Object.fromEntries(aggregate.projects)
-});
-
-/**
- * Print every loaded day as JSON, sorted by date. This is the `--json` / `bun run json` output.
+ * Print the stats block under the graph, one aligned `label  value` line each.
  *
  * @returns nothing; writes to stdout.
  * Called by: main.
- * Calls: toJsonDay.
+ * Calls: dim.
  */
-function printJson(days: Days) {
-	const rows = [...days.entries()]
-		.sort(([left], [right]) => left.localeCompare(right))
-		.map(([date, aggregate]) => toJsonDay(date, aggregate));
-	console.log(JSON.stringify(rows, null, 2));
+function printSummary(lines: SummaryLine[]) {
+	for (const line of lines) console.log(line ? `  ${dim(line.label.padEnd(16))}${line.text}` : '');
 }
 
 /**
- * Select the aggregates that fall inside the grid's window (start to today).
+ * Entry point: validate flags, then either open the TUI, or load all sources in parallel from
+ * the start of the grid window and dump JSON or print the graph and summary, writing the SVG
+ * if asked.
  *
- * @returns the in-window days, in no particular order.
- * Called by: printSummary, main.
- * Calls: nothing.
- */
-const daysInView = (days: Days, grid: Grid): Day[] =>
-	[...days.entries()].filter(([key]) => key >= grid.start && key <= grid.end).map(([, day]) => day);
-
-/**
- * Print the stats block under the graph: streaks and busiest day for the chosen metric (one
- * line of active days and streaks per metric for a combined graph), then window totals for every source regardless of metric (sessions/prompts/tokens per tool,
- * commits and the AI-assisted share) and the top five projects by prompts.
- *
- * @returns nothing; writes to stdout.
- * Called by: main.
- * Calls: daysInView, fmt, dim; the local helpers row, sum and sessions.
- */
-function printSummary(days: Days, grid: Grid, summaries: [Metric, Summary][], filter: ToolFilter, withGit: boolean) {
-	const inView = daysInView(days, grid);
-	/** Sum a per-day quantity over the visible window. Called by: printSummary. Calls: nothing. */
-	const sum = (pick: (day: Day) => number) => inView.reduce((total, day) => total + pick(day), 0);
-	/** Count distinct sessions of one tool in the window (a session spanning days counts once). Called by: printSummary. Calls: nothing. */
-	const sessions = (tool: Tool) => new Set(inView.flatMap((day) => [...day.sessions[tool]])).size;
-	/** Print one aligned `label  value` line. Called by: printSummary. Calls: dim. */
-	const row = (label: string, text: string) => console.log(`  ${dim(label.padEnd(16))}${text}`);
-
-	const [only, ...more] = summaries;
-	if (only && !more.length) {
-		const [, summary] = only;
-		row('active days', `${summary.activeDays} / ${summary.totalDays}`);
-		row('streak', `${summary.currentStreak}d current · ${summary.longestStreak}d longest`);
-		if (summary.busiest) row('busiest day', `${summary.busiest.key} (${fmt(summary.busiest.value)})`);
-	} else {
-		for (const [metric, summary] of summaries) {
-			row(
-				metric,
-				`${summary.activeDays} / ${summary.totalDays} active days · ${summary.currentStreak}d current · ${summary.longestStreak}d longest streak`
-			);
-		}
-	}
-	console.log();
-	for (const tool of ['claude', 'codex'] as const) {
-		if (filter !== 'all' && filter !== tool) continue;
-		row(
-			TOOL_LABEL[tool],
-			`${fmt(sessions(tool))} sessions · ${fmt(sum((day) => day.prompts[tool]))} prompts · ${fmt(sum((day) => day.tokens[tool]))} tokens`
-		);
-	}
-	if (withGit) {
-		const commits = sum((day) => day.commits);
-		const aiCommits = sum((day) => day.aiCommits);
-		const share = commits ? Math.round((aiCommits / commits) * 100) : 0;
-		row('git', `${fmt(commits)} commits · ${fmt(aiCommits)} AI-assisted (${share}%)`);
-	}
-
-	const projects = new Map<string, number>();
-	for (const day of inView) {
-		for (const [project, prompts] of day.projects) projects.set(project, (projects.get(project) ?? 0) + prompts);
-	}
-	const top = [...projects].sort((left, right) => right[1] - left[1]).slice(0, 5);
-	if (top.length) {
-		row('top projects', top.map(([project, prompts]) => `${project} ${dim(String(prompts))}`).join(dim(' · ')));
-	}
-}
-
-/**
- * Entry point: validate flags, load all sources in parallel from the start of the grid
- * window, then either dump JSON or print the graph and summary, and write the SVG if asked.
- *
- * @returns resolves when output is written; exits early on `--help`, bad flags, or `--json`.
+ * @returns resolves when output is written or the TUI closes; exits early on `--help`, bad flags, or `--json`.
  * Called by: module top level.
- * Calls: versionLine, die, isMetric, isToolFilter, isCellStyle, isTerminalTheme, cellWidth, barsWidth, detectTheme, gitAuthors, loadClaude, loadCodex,
- *        loadGit, printJson, buildGrid, summarize, renderGrid, renderBars, printSummary, renderSvg, renderBarsSvg.
+ * Calls: versionLine, die, isMetric, isToolFilter, isCellStyle, isTerminalTheme, cellWidth, barsWidth, detectTheme,
+ *        runTui (tui/app, loaded on demand), loadSources, jsonRows, buildView, scopeOf, totalsLine, renderGrid,
+ *        renderBars, summaryLines, printSummary, writeSvg.
  */
 async function main() {
 	if (args.version) {
@@ -236,59 +133,48 @@ async function main() {
 	const weeks = args.weeks ? Number(args.weeks) : Math.max(4, Math.min(53, fitWeeks));
 	if (!Number.isInteger(weeks) || weeks < 1) die(`--weeks must be a positive integer`);
 
-	const since = dayKey(gridStart(weeks));
-	const days: Days = new Map();
 	const withGit = !args['no-git'];
-	const gitRoots = (args['git-root'] ?? [join(homedir(), 'develop')]).map((root) => resolve(root));
+	const sources: LoadOptions = {
+		claudeDir: args['claude-dir'] ? resolve(args['claude-dir']) : undefined,
+		codexDir: args['codex-dir'] ? resolve(args['codex-dir']) : undefined,
+		withGit,
+		gitRoots: (args['git-root'] ?? [join(homedir(), 'develop')]).map((root) => resolve(root)),
+		authors: args.author
+	};
 
-	const started = performance.now();
-	const [claudeFiles, codexFiles, repos] = await Promise.all([
-		loadClaude(days, since, args['claude-dir'] ? resolve(args['claude-dir']) : undefined),
-		loadCodex(days, since, args['codex-dir'] ? resolve(args['codex-dir']) : undefined),
-		withGit ? gitAuthors().then((authors) => loadGit(days, since, gitRoots, authors)) : Promise.resolve(0)
-	]);
-	const elapsed = ((performance.now() - started) / 1000).toFixed(1);
-
-	if (args.json) {
-		printJson(days);
+	if (args.interactive) {
+		if (!process.stdin.isTTY || !process.stdout.isTTY) die('--interactive needs a terminal');
+		// Ask before Ink takes over stdin: the question reads the terminal's reply from it.
+		const theme: TerminalTheme = args.theme ?? (await detectTheme());
+		// Loaded on demand, so the plain CLI never pays for React and Ink at startup.
+		const { runTui } = await import('./tui/app');
+		await runTui({ metrics, tool: filter, weeks: args.weeks ? weeks : 'fit', cells, theme, withGit }, sources);
 		return;
 	}
 
-	const grids = metrics.map((each): [Metric, Grid] => [each, buildGrid(days, each, filter, weeks)]);
-	const summaries = grids.map(([each, grid]): [Metric, Summary] => [each, summarize(grid)]);
-	const grid = grids[0]![1];
-	const summary = summaries[0]![1];
-	const isGitMetric = (each: Metric) => each === 'commits' || each === 'ai';
-	const gitOnly = metrics.every(isGitMetric);
-	const agentScope = metrics.some(isGitMetric) ? `${TOOL_LABEL[filter]} + git` : TOOL_LABEL[filter];
-	const scope = gitOnly ? 'git' : agentScope;
+	const { days, claudeFiles, codexFiles, repos, seconds } = await loadSources(sources, dayKey(gridStart(weeks)));
 
-	const totals = summaries.map(([each, { total }]) => `${fmt(total)} ${METRIC_LABEL[each]}`).join(' · ');
+	if (args.json) {
+		console.log(JSON.stringify(jsonRows(days), null, 2));
+		return;
+	}
+
+	const view = buildView(days, metrics, filter, weeks);
+	const { scope } = scopeOf(metrics, filter);
 	console.log();
-	console.log(`  ${bold(totals)} ${dim(`in the last ${weeks} weeks · ${scope}`)}`);
+	console.log(`  ${bold(totalsLine(view))} ${dim(`in the last ${weeks} weeks · ${scope}`)}`);
 	console.log();
 	// Only ask the terminal for its background when the grid is actually drawn.
 	const theme: TerminalTheme = args.theme ?? (await detectTheme());
-	console.log(combined ? renderBars(grids, { theme }) : renderGrid(grid, metric, { cells, theme }));
+	console.log(combined ? renderBars(view.grids, { theme }) : renderGrid(view.grids[0]![1], metric, { cells, theme }));
 	console.log();
-	printSummary(days, grid, summaries, filter, withGit);
+	printSummary(summaryLines(days, view, filter, withGit));
 	console.log();
-	console.log(dim(`  scanned ${claudeFiles} Claude + ${codexFiles} Codex transcripts, ${repos} repos in ${elapsed}s`));
+	console.log(
+		dim(`  scanned ${claudeFiles} Claude + ${codexFiles} Codex transcripts, ${repos} repos in ${seconds.toFixed(1)}s`)
+	);
 
-	if (args.svg) {
-		const path = resolve(args.svg);
-		const title = gitOnly ? 'Git activity' : `Agent activity · ${scope}`;
-		await mkdir(dirname(path), { recursive: true });
-		const svg = combined
-			? renderBarsSvg(
-					grids,
-					summaries.map(([, each]) => each),
-					title
-				)
-			: renderSvg(grid, metric, summary, title, { cells });
-		await writeFile(path, svg);
-		console.log(dim(`  wrote ${path}`));
-	}
+	if (args.svg) console.log(dim(`  wrote ${await writeSvg(args.svg, view, filter, cells)}`));
 	console.log();
 }
 
