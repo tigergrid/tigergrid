@@ -68,7 +68,8 @@ class Session {
 
 	/**
 	 * Spawn the binary with the pty as its controlling terminal. CI is removed from the
-	 * environment because Ink renders non-interactively when it sees it.
+	 * environment because Ink renders non-interactively when it sees it, and NO_COLOR so the TUI
+	 * is tested in colour, as people see it, whatever the environment says.
 	 *
 	 * Called by: the describe blocks.
 	 * Calls: Bun.Terminal, Bun.spawn.
@@ -82,7 +83,7 @@ class Session {
 				this.screen.write(data);
 			}
 		});
-		const { CI: _, ...env } = process.env;
+		const { CI: _ci, NO_COLOR: _noColor, ...env } = process.env;
 		this.proc = Bun.spawn([...COMMAND, ...ARGS], { terminal: this.terminal, env: { ...env, COLORTERM: 'truecolor' } });
 	}
 

@@ -1,7 +1,15 @@
 import type { CellStyle, Grid, Metric, RenderOptions } from '../../types/grid';
 import { METRIC_LABEL, monthLabels, PALETTES } from '../grid';
 
-const color = process.stdout.isTTY && !process.env.NO_COLOR;
+/**
+ * Whether to draw in colour: stdout is a terminal and NO_COLOR is unset. Checked on every call
+ * rather than once at import, so the answer never depends on which module loaded first.
+ *
+ * @returns true to colour.
+ * Called by: dim, bold, fg, cell, renderBars.
+ * Calls: nothing.
+ */
+const color = () => process.stdout.isTTY && !process.env.NO_COLOR;
 const RESET = '\x1b[0m';
 const WEEKDAYS = ['', 'Mon', '', 'Wed', '', 'Fri', ''];
 /** Bar glyphs for levels 0..4 in a combined graph: a grey baseline for 0, then rising blocks. */
@@ -42,28 +50,28 @@ export const cellWidth = (style: CellStyle): number => CELLS[style].width;
  *
  * @returns the possibly-styled string.
  * Called by: renderGrid, cli.
- * Calls: nothing.
+ * Calls: color.
  */
-export const dim = (text: string) => (color ? `\x1b[2m${text}${RESET}` : text);
+export const dim = (text: string) => (color() ? `\x1b[2m${text}${RESET}` : text);
 
 /**
  * Wrap text in ANSI bold, or leave it plain when stdout isn't a colour TTY.
  *
  * @returns the possibly-styled string.
  * Called by: cli.
- * Calls: nothing.
+ * Calls: color.
  */
-export const bold = (text: string) => (color ? `\x1b[1m${text}${RESET}` : text);
+export const bold = (text: string) => (color() ? `\x1b[1m${text}${RESET}` : text);
 
 /**
  * Colour text with a 24-bit foreground from a `#rrggbb` hex string.
  *
  * @returns the string wrapped in truecolor escape codes, or unchanged without colour.
  * Called by: cell.
- * Calls: nothing.
+ * Calls: color.
  */
 function fg(hex: string, text: string): string {
-	if (!color) return text;
+	if (!color()) return text;
 	const rgb = parseInt(hex.slice(1), 16);
 	return `\x1b[38;2;${(rgb >> 16) & 255};${(rgb >> 8) & 255};${rgb & 255}m${text}${RESET}`;
 }
@@ -74,11 +82,11 @@ function fg(hex: string, text: string): string {
  *
  * @returns the cell string, always `cellWidth(options.cells)` columns wide.
  * Called by: renderGrid.
- * Calls: fg.
+ * Calls: color, fg.
  */
 function cell(metric: Metric, level: number, options: RenderOptions): string {
 	const style = CELLS[options.cells];
-	return color ? fg(PALETTES[metric][options.theme][level]!, style.glyph) : style.mono[level]!;
+	return color() ? fg(PALETTES[metric][options.theme][level]!, style.glyph) : style.mono[level]!;
 }
 
 /**
@@ -143,15 +151,15 @@ export const barsWidth = (metrics: number): number => metrics + 1;
  *
  * @returns the multi-line string, ready to print.
  * Called by: cli.
- * Calls: monthHeader, barsWidth, fg, dim.
+ * Calls: monthHeader, barsWidth, color, fg, dim.
  */
 export function renderBars(grids: [Metric, Grid][], options: Pick<RenderOptions, 'theme'>): string {
 	const [first] = grids;
 	if (!first) return '';
 	const lines: string[] = [dim(monthHeader(first[1], barsWidth(grids.length)))];
-	/** One metric's bar for one day. Called by: renderBars. Calls: fg. */
+	/** One metric's bar for one day. Called by: renderBars. Calls: color, fg. */
 	const bar = (metric: Metric, level: number) => {
-		if (!color) return BARS_MONO[level]!;
+		if (!color()) return BARS_MONO[level]!;
 		const ramp = PALETTES[metric][options.theme];
 		return fg(level ? ramp[4]! : ramp[0]!, BARS[level]!);
 	};
@@ -165,7 +173,7 @@ export function renderBars(grids: [Metric, Grid][], options: Pick<RenderOptions,
 		lines.push(line);
 	}
 
-	const legend = color
+	const legend = color()
 		? grids.map(([metric]) => `${fg(PALETTES[metric][options.theme][4]!, '█')} ${dim(METRIC_LABEL[metric])}`).join('  ')
 		: dim(`bars, left to right: ${grids.map(([metric]) => METRIC_LABEL[metric]).join(' · ')}`);
 	lines.push('', `    ${legend}`);

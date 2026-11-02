@@ -1,13 +1,21 @@
-import { describe, expect, test } from 'bun:test';
+import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 import type { Days } from '../types/days';
 import type { Grid, Metric } from '../types/grid';
 import { day } from '../src/days';
 import { buildGrid, summarize } from '../src/grid';
 import { renderBarsSvg, renderSvg } from '../src/render/svg';
+import { renderBars, renderGrid } from '../src/render/terminal';
 
-// The terminal renderer decides on colour at import time; force plain output first.
-process.env.NO_COLOR = '1';
-const { renderBars, renderGrid } = await import('../src/render/terminal');
+// The terminal renderer colours its output when `bun test` runs in a terminal; NO_COLOR forces
+// the plain output these tests compare against, for this file only.
+const savedNoColor = process.env.NO_COLOR;
+beforeAll(() => {
+	process.env.NO_COLOR = '1';
+});
+afterAll(() => {
+	if (savedNoColor === undefined) delete process.env.NO_COLOR;
+	else process.env.NO_COLOR = savedNoColor;
+});
 
 const TODAY = new Date(2026, 8, 12); // Saturday
 const days: Days = new Map();
