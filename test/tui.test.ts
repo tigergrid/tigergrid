@@ -65,6 +65,9 @@ class Session {
 	readonly terminal: Bun.Terminal;
 	readonly proc: Bun.Subprocess;
 	private chunks: Uint8Array[] = [];
+	/** Writes handed to the emulator that it hasn't parsed yet (xterm parses asynchronously). */
+	private unparsed = 0;
+	private lastOutput = performance.now();
 
 	/**
 	 * Spawn the binary with the pty as its controlling terminal. CI is removed from the
@@ -80,7 +83,9 @@ class Session {
 			rows: ROWS,
 			data: (_, data) => {
 				this.chunks.push(data);
-				this.screen.write(data);
+				this.lastOutput = performance.now();
+				this.unparsed++;
+				this.screen.write(data, () => this.unparsed--);
 			}
 		});
 		const { CI: _ci, NO_COLOR: _noColor, ...env } = process.env;
@@ -142,17 +147,41 @@ class Session {
 	}
 
 	/**
-	 * Poll the screen until it shows `needle`.
+	 * Wait for the frame on screen to be finished: the emulator has parsed every byte and the
+	 * TUI has written nothing for `quiet` ms. A frame can reach the emulator in pieces, so a
+	 * screen read the moment a needle shows up may pair the new frame's top with the old
+	 * frame's bottom.
+	 *
+	 * @returns once settled, or after `timeout` (a running spinner never goes quiet) so the
+	 * caller's checks report what is on screen.
+	 * Called by: waitFor.
+	 * Calls: Bun.sleep.
+	 */
+	async settled(quiet = 100, timeout = 2000) {
+		const deadline = performance.now() + timeout;
+		while (performance.now() < deadline) {
+			if (this.unparsed === 0 && performance.now() - this.lastOutput >= quiet) return;
+			await Bun.sleep(10);
+		}
+	}
+
+	/**
+	 * Poll the screen until it shows `needle`, then wait for that frame to finish so the
+	 * checks that follow read all of it.
 	 *
 	 * @returns milliseconds since spawn when it appeared.
 	 * @throws with the current screen when it doesn't appear in time.
 	 * Called by: tests.
-	 * Calls: text, Bun.sleep.
+	 * Calls: text, settled, Bun.sleep.
 	 */
 	async waitFor(needle: string, timeout = 5000): Promise<number> {
 		const deadline = performance.now() + timeout;
 		while (performance.now() < deadline) {
-			if (this.text().includes(needle)) return performance.now() - this.started;
+			if (this.text().includes(needle)) {
+				const elapsed = performance.now() - this.started;
+				await this.settled();
+				return elapsed;
+			}
 			await Bun.sleep(20);
 		}
 		throw new Error(`timed out waiting for ${JSON.stringify(needle)}; screen:\n${this.text()}`);
@@ -175,11 +204,11 @@ class Session {
 	 *
 	 * @returns the exit code, or null when a signal ended it.
 	 * Called by: tests.
-	 * Calls: Subprocess.exited, Bun.sleep.
+	 * Calls: Subprocess.exited, settled.
 	 */
 	async exited(): Promise<number | null> {
 		await this.proc.exited;
-		await Bun.sleep(100);
+		await this.settled();
 		return this.proc.exitCode;
 	}
 
