@@ -32,6 +32,12 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
+      # Lint type-checks spikes/ink-tui through its own tsconfig, so it needs its packages. Its
+      # pty test runs in the tui-spike job; here it skips, since no spike binary is built.
+      - name: Install TUI spike dependencies
+        working-directory: spikes/ink-tui
+        run: bun install --frozen-lockfile
+
       # test/network.test.ts traces the CLI with strace to prove it makes no connections.
       - name: Install strace
         run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends strace
@@ -102,3 +108,43 @@ jobs:
         with:
           name: tigergrid-${{ matrix.target }}
           path: dist/
+
+  # The Ink TUI spike (spikes/ink-tui), compiled for each target and driven on a real
+  # pseudo-terminal on matching hardware: keys, paste, resize, Ctrl+C and SIGTERM teardown.
+  tui-spike:
+    needs: check
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            target: bun-linux-x64
+          - runner: ubuntu-24.04-arm
+            target: bun-linux-arm64
+          - runner: macos-latest
+            target: bun-darwin-arm64
+    runs-on: ${{ matrix.runner }}
+    defaults:
+      run:
+        working-directory: spikes/ink-tui
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.3
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Build
+        run: bun build.ts ${{ matrix.target }}
+
+      # The test skips when the binary is missing, so check for it first: a build that wrote
+      # the wrong file must fail here, not pass as skipped.
+      - name: Test on a real pseudo-terminal
+        run: |
+          target='${{ matrix.target }}'
+          test -x "dist/spike-${target#bun-}"
+          bun test

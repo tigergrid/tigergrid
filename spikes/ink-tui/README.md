@@ -38,7 +38,9 @@ Try it by hand: `./dist/spike-linux-x64`, then type `/`.
 | `@inkjs/ui` 2.0 (last release May 2024) and `ink-gradient` 4 work with Ink 8 | ✅ |
 | Binary size | Ink + React add ~0.6 MB minified JS; the binary stays ~105 MB (linux) / ~86 MB (darwin), which is Bun's runtime |
 
-**Not run:** linux-arm64 and darwin-arm64 build fine (correct ELF aarch64 / Mach-O arm64), but this machine can't execute them (no arm64 sysroot for qemu, no Mac). The JS bundle is identical across targets, so the risk is low. To close that gap, run `bun test` on the CI runners that already build each target (`Bun.Terminal` works on macOS too, and the test knows macOS's termios flag values).
+**darwin-arm64** (macOS, Bun 1.4.4): 10/10 pass; first frame ~66 ms, or ~1 s on the first launch of a freshly built binary while macOS checks it.
+
+**CI:** the `tui-spike` job in `.github/workflows/ci.yml` builds each target on matching hardware (`bun build.ts <target>`) and runs this test there: linux-x64, linux-arm64 and darwin-arm64.
 
 ## Findings to carry into the real build
 
