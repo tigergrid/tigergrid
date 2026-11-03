@@ -1,6 +1,6 @@
 # The TUI: Ink 8 in a compiled Bun binary
 
-`tigergrid -i` opens a fullscreen TUI built on Ink (React for terminals). It ships inside the same standalone binaries and the same Node build as the CLI. This page explains how it's built and tested, and what the spike that preceded it found.
+`tigergrid -i` opens a fullscreen TUI built on Ink (React for terminals). It ships inside the same standalone binaries as the CLI; the npm package is the parsers only. This page explains how it's built and tested, and what the spike that preceded it found.
 
 ## Where it lives
 
@@ -9,10 +9,10 @@
 | `src/tui/app.tsx` | The Ink app: header with the current settings, the graph panel (the CLI's own `renderGrid` / `renderBars` output and stats), the help panel, the `/` prompt with suggestions, a status line and the key bar. Loaded on demand, so the plain CLI never starts React |
 | `src/tui/commands.ts` | Pure input handling: `/` commands that mirror the CLI flags, hotkeys, suggestions. Unit-tested in `test/tui-commands.test.ts` |
 | `src/load.ts`, `src/report.ts` | What the CLI and the TUI share: loading the sources; the graph, headline, stats, JSON rows and SVG file |
-| `scripts/bundle.ts` | Bundle options for both builds, including the `react-devtools-core` stub (finding 1) |
+| `scripts/build.ts` | Compiles the binaries, with the `react-devtools-core` stub (finding 1) |
 | `test/tui.test.ts` | Runs `tigergrid -i` against the fixtures on a real pseudo-terminal (`Bun.Terminal`), mirrors its output into a headless xterm.js (`@xterm/headless`), types keys and commands, writes exports, resizes, sends Ctrl+C / SIGTERM, and checks the rendered screen and the terminal state afterwards |
 
-The pty test runs from source in `bun test`, against the Node build in `bun run test:node`, and against each compiled binary in CI's `binaries` job (`TIGERGRID_TUI_BINARY`), on linux-x64, linux-arm64 and darwin-arm64.
+The pty test runs from source in `bun test`, and against each compiled binary in CI's `binaries` job (`TIGERGRID_TUI_BINARY`), on linux-x64, linux-arm64 and darwin-arm64.
 
 ## Spike results (linux-x64, Bun 1.4.4, Ink 8.0.0, React 19.3)
 
@@ -40,7 +40,7 @@ The spike asked whether the TUI could be built on Ink and still ship as a `bun b
 1. **`react-devtools-core` must be stubbed.** Ink dynamically imports it when `DEV=true`. Both obvious fixes fail:
    - `--define process.env.DEV="false"` alone: **build fails**. Bun resolves dynamic imports before dropping the dead branch.
    - `--external react-devtools-core`: **builds, but the binary crashes at startup** (`Cannot find package 'react-devtools-core' from '/$bunfs/root/…'`). Bun hoists the external import to the top level.
-   - What works: a `Bun.build` plugin that resolves the package to an empty module, plus the `DEV` define so a user's `DEV=true` does nothing. `scripts/bundle.ts` holds both; `scripts/build.ts` (binaries) and `scripts/build-node.ts` (npm) use the `Bun.build` API instead of spawning `bun build`.
+   - What works: a `Bun.build` plugin that resolves the package to an empty module, plus the `DEV` define so a user's `DEV=true` does nothing. `scripts/build.ts` passes both to the `Bun.build` API instead of spawning `bun build`.
 2. **Pastes arrive as one `input`.** A multi-character chunk reaches `useInput` as a single string with `key.return === false`, newline included. So a pasted newline doesn't submit (good), but the app has to strip control characters itself or `\r` ends up in the prompt.
 3. **Ink 8 covers what we were going to hand-roll:** `alternateScreen`, `incrementalRendering` (redraws only changed lines; our flicker worry), `maxFps` (default 30), `useWindowSize`, `overflow` + `contentOffsetY` for scrolling, and kitty keyboard protocol support.
 4. **Use our own input handling, not `@inkjs/ui`'s `TextInput`.** We need to drive the suggestion list with Tab and arrow keys, and that's ~30 lines with `useInput`. `@inkjs/ui` is still fine for spinners and progress bars.

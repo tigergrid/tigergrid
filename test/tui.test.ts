@@ -3,8 +3,8 @@
 // and Ctrl+C behave as in a real terminal; the emulator lets checks read rendered text, because
 // Ink's incremental rendering only rewrites the cells that changed.
 //
-// Runs from source; with TIGERGRID_TEST_NODE=1, the Node build; with TIGERGRID_TUI_BINARY, that
-// compiled binary (CI's binaries job sets it on each platform).
+// Runs from source, or with TIGERGRID_TUI_BINARY, that compiled binary (CI's binaries job sets
+// it on each platform).
 import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from 'bun:test';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -15,12 +15,7 @@ import { buildGitFixture } from './helpers/git-fixture';
 
 const COLS = 100;
 const ROWS = 32;
-/** The TUI as the other end-to-end tests run it: from source, the Node build, or a compiled binary. */
-function command(): string[] {
-	if (process.env.TIGERGRID_TUI_BINARY) return [process.env.TIGERGRID_TUI_BINARY];
-	return process.env.TIGERGRID_TEST_NODE === '1' ? ['node', 'dist/node/cli.js'] : ['bun', 'src/cli.ts'];
-}
-const COMMAND = command();
+const COMMAND = process.env.TIGERGRID_TUI_BINARY ? [process.env.TIGERGRID_TUI_BINARY] : ['bun', 'src/cli.ts'];
 
 // The same fixtures and 520-week window as test/cli.test.ts; --theme skips the terminal
 // colour question, which the headless emulator doesn't answer.

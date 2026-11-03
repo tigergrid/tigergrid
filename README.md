@@ -1,6 +1,6 @@
 # TigerGrid
 
-[![CI](https://github.com/Lemontiger26/tigergrid/actions/workflows/ci.yml/badge.svg)](https://github.com/Lemontiger26/tigergrid/actions/workflows/ci.yml)
+[![CI](https://github.com/tigergrid/tigergrid/actions/workflows/ci.yml/badge.svg)](https://github.com/tigergrid/tigergrid/actions/workflows/ci.yml)
 
 A GitHub-style contribution graph of your AI coding agents: Claude Code and Codex sessions, prompts and tokens, plus the share of your git commits that agents co-authored. Everything is read locally; nothing leaves the machine (`test/network.test.ts` runs every CLI mode under strace and fails on any network connection).
 
@@ -45,19 +45,27 @@ SVGs follow the viewer's `prefers-color-scheme`. Each metric has its own colour:
 
 `tokens` means fresh tokens: uncached input + cache writes + output. Cache reads are excluded because they would swamp everything else.
 
-## Node.js
+## The npm package
 
-The runtime uses Node.js APIs and supports Node.js 22.17 or newer. Bun remains the
-build tool and test runner. Build and run the JavaScript CLI with:
+The npm package is the parsers, for Node.js 22.17 or newer. The CLI and the TUI aren't in it: they ship as the [standalone binaries](#standalone-binaries), or run from source with Bun.
 
-```sh
-bun run build:node
-node dist/node/cli.js --help
-bun run test:node # run CLI integration tests under Node.js
+```ts
+import { loadSources } from 'tigergrid';
+
+const { days } = await loadSources({ withGit: true, gitRoots: ['/path/to/repos'] }, '2026-01-01');
+for (const [date, day] of days) console.log(date, day.prompts.claude + day.prompts.codex, day.commits);
 ```
 
-The npm CLI entry point uses this JavaScript build; packing builds it automatically.
-The package does not yet expose a public parser API.
+| Export                                         | What it does                                                                                     |
+| ---------------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| `loadClaude(days, since, root?)`               | Adds Claude Code transcripts from `since` (a `YYYY-MM-DD` day key) to `days`; returns files read |
+| `loadCodex(days, since, home?)`                | The same for Codex rollouts                                                                      |
+| `loadGit(days, since, roots, authors)`         | The same for commits by `authors` in the repos under `roots`; returns repos read                 |
+| `loadSources(options, since)`                  | All three in parallel, as the CLI runs them; returns the days and what was read                  |
+| `CLAUDE_PROJECTS`, `CODEX_HOME`                | The default locations                                                                            |
+| `Day`, `Days`, `Tool`, `LoadOptions`, `Loaded` | Types                                                                                            |
+
+The counting rules are the ones under [Sources and counting rules](#sources-and-counting-rules). `bun run build:lib` builds the package into `dist/lib` (packing builds it too). `bun run test:lib` installs it into a scratch project, runs it under Node.js against the fixtures, and type-checks a strict NodeNext consumer against its declarations; CI runs that on Node.js 22.17 and 24.
 
 Grid’s intended boundary is resolving agent activity to repositories. Applications consuming its data own
 any higher-level grouping of repositories into projects. The current daily export

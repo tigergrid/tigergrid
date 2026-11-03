@@ -49,6 +49,8 @@ jobs:
       - name: Test
         run: bun run test
 
+  # The npm package (the parsers) as a consumer gets it, on the oldest and the newest
+  # supported Node.js. The CLI and the TUI ship as the binaries below.
   node:
     needs: check
     runs-on: ubuntu-latest
@@ -64,8 +66,7 @@ jobs:
         with:
           node-version: ${{ matrix.node }}
       - run: bun install --frozen-lockfile
-      - run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends strace
-      - run: bun run test:node
+      - run: bun run test:lib
 
   # Each target is built and smoke-tested on matching hardware (scripts/smoke.ts); the
   # binaries are attached to the run as artifacts.

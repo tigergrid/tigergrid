@@ -29,8 +29,7 @@ const FIXTURE_ARGS = [
 
 /** Run the CLI with plain output; returns exit code, stdout and stderr. */
 function cli(...args: string[]) {
-	const command = process.env.TIGERGRID_TEST_NODE === '1' ? ['node', 'dist/node/cli.js'] : ['bun', 'src/cli.ts'];
-	const result = Bun.spawnSync([...command, ...args], { env: { ...process.env, NO_COLOR: '1' } });
+	const result = Bun.spawnSync(['bun', 'src/cli.ts', ...args], { env: { ...process.env, NO_COLOR: '1' } });
 	return { code: result.exitCode, stdout: result.stdout.toString(), stderr: result.stderr.toString() };
 }
 

@@ -4,11 +4,24 @@
 // `bun scripts/build.ts bun-linux-x64` for a subset (CI builds one per runner).
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { DEFINE, ENTRYPOINT, PLUGINS } from './bundle';
+import type { BunPlugin } from 'bun';
 
 const TARGETS = ['bun-linux-x64', 'bun-linux-arm64', 'bun-darwin-arm64'] as const;
 type Target = (typeof TARGETS)[number];
 const OUT_DIR = 'dist';
+
+// Ink dynamically imports react-devtools-core when DEV=true. Neither CLI flag handles that:
+// Bun resolves the import before dropping the dead branch (so the build fails), and
+// `--external` hoists it into a top-level import (so the output fails at startup). Resolving
+// it to an empty module works; the DEV define makes the branch dead anyway, so a user's
+// DEV=true does nothing.
+const stubDevtools: BunPlugin = {
+	name: 'stub-react-devtools-core',
+	setup(build) {
+		build.onResolve({ filter: /^react-devtools-core$/ }, () => ({ path: 'react-devtools-core', namespace: 'stub' }));
+		build.onLoad({ filter: /.*/, namespace: 'stub' }, () => ({ contents: 'export default {};', loader: 'js' }));
+	}
+};
 
 /**
  * Run a command and fail loudly with its stderr if it exits non-zero.
@@ -40,7 +53,7 @@ function buildCommit(): string {
  * Compile the CLI for one target. The commit is baked in through `process.env.TIGERGRID_COMMIT`
  * (read by `--version`), and the binary ignores `.env` and `bunfig.toml` files in whatever
  * directory it runs from. Uses the Bun.build API rather than `bun build`, because the
- * react-devtools-core stub (scripts/bundle.ts) is a plugin.
+ * react-devtools-core stub is a plugin.
  *
  * @returns the output path, e.g. `dist/tigergrid-linux-x64`.
  * Called by: module top level.
@@ -49,10 +62,10 @@ function buildCommit(): string {
 async function compile(target: Target, commit: string): Promise<string> {
 	const outfile = join(OUT_DIR, `tigergrid-${target.replace(/^bun-/, '')}`);
 	const result = await Bun.build({
-		entrypoints: [ENTRYPOINT],
+		entrypoints: ['src/cli.ts'],
 		compile: { target, outfile, autoloadDotenv: false, autoloadBunfig: false },
-		define: { ...DEFINE, 'process.env.TIGERGRID_COMMIT': JSON.stringify(commit) },
-		plugins: PLUGINS
+		define: { 'process.env.DEV': JSON.stringify('false'), 'process.env.TIGERGRID_COMMIT': JSON.stringify(commit) },
+		plugins: [stubDevtools]
 	});
 	if (!result.success) throw new AggregateError(result.logs, `build for ${target} failed`);
 	return outfile;

@@ -53,11 +53,6 @@ function traced(name: string, command: string[]) {
 	return { code: result.exitCode, calls };
 }
 
-/** The CLI as the other end-to-end tests run it: from source, or the Node build. */
-function cli(): string[] {
-	return process.env.TIGERGRID_TEST_NODE === '1' ? ['node', 'dist/node/cli.js'] : ['bun', 'src/cli.ts'];
-}
-
 describe.if(runs)('no network without a login', () => {
 	test('the trace sees a connect when one happens', () => {
 		const probe = traced('probe', ['bun', '-e', "await fetch('http://127.0.0.1:9').catch(() => {})"]);
@@ -82,7 +77,7 @@ describe.if(runs)('no network without a login', () => {
 
 	for (const [name, args] of Object.entries(modes)) {
 		test(`${name} makes no IP connections`, () => {
-			const run = traced(name, [...cli(), ...args]);
+			const run = traced(name, ['bun', 'src/cli.ts', ...args]);
 			expect(run.code).toBe(0);
 			expect(run.calls).toEqual([]);
 		});
