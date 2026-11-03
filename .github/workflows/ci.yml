@@ -3,6 +3,9 @@ name: CI
 on:
   push:
     branches: ['**']
+    # A v* tag runs everything below and then publishes the release (path filters don't
+    # apply to tag pushes).
+    tags: ['v*']
     paths-ignore:
       - '**/*.md'
   pull_request:
@@ -31,6 +34,16 @@ jobs:
 
       - name: Install dependencies
         run: bun install --frozen-lockfile
+
+      # The binaries print package.json's version, so a release tag has to name the same one.
+      - name: Tag matches package.json
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          version=$(jq -r .version package.json)
+          if [ "$GITHUB_REF_NAME" != "v$version" ]; then
+            echo "::error::tag $GITHUB_REF_NAME doesn't match package.json version $version"
+            exit 1
+          fi
 
       # test/network.test.ts traces the CLI with strace to prove it makes no connections.
       - name: Install strace
@@ -110,3 +123,34 @@ jobs:
         with:
           name: tigergrid-${{ matrix.target }}
           path: dist/
+
+  # On a v* tag, once every job above has passed: the binaries just built and tested become
+  # a GitHub Release, so releases/latest/download/tigergrid-<os>-<arch> always fetches the
+  # newest one.
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [node, binaries]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: tigergrid-bun-*
+          path: artifacts
+
+      # Each runner hashed its own binary; check every hash, then combine them.
+      - name: Collect the binaries and SHA256SUMS
+        run: |
+          mkdir release
+          for dir in artifacts/*/; do
+            (cd "$dir" && sha256sum -c SHA256SUMS)
+            cat "$dir/SHA256SUMS" >> release/SHA256SUMS
+            mv "$dir"tigergrid-* release/
+          done
+          ls -l release
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" release/* --repo "$GITHUB_REPOSITORY" --verify-tag --generate-notes

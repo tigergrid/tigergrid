@@ -74,7 +74,13 @@ session-level exports are planned.
 
 ## Standalone binaries
 
-`bun run build` compiles single-file executables into `dist/` (no Bun needed to run them), plus `dist/SHA256SUMS`:
+Each [release](https://github.com/tigergrid/tigergrid/releases) has single-file executables that need neither Bun nor Node.js, plus `SHA256SUMS`:
+
+```sh
+curl -fsSL https://github.com/tigergrid/tigergrid/releases/latest/download/tigergrid-linux-x64 -o tigergrid
+chmod +x tigergrid
+./tigergrid --version
+```
 
 | Binary                   | Platform               |
 | ------------------------ | ---------------------- |
@@ -82,7 +88,13 @@ session-level exports are planned.
 | `tigergrid-linux-x64`    | Linux x86-64 (glibc)   |
 | `tigergrid-linux-arm64`  | Linux ARM64 (glibc)    |
 
-`bun scripts/build.ts bun-linux-x64` builds a single target. `tigergrid --version` prints the version and the commit the binary was built from (`-dirty` if the working tree had uncommitted changes). Compiled binaries ignore `.env` and `bunfig.toml` files in the directory they run from. CI builds and smoke-tests each binary on matching hardware and attaches them to the run.
+On macOS, download with `curl` as well: the binaries aren't notarized, so Gatekeeper blocks one that a browser downloaded (`xattr -d com.apple.quarantine tigergrid` lifts that).
+
+In CI there are no agent transcripts, only git history. Check out the full history (`actions/checkout` fetches a single commit unless `fetch-depth: 0`), point `--git-root` at the checkout (the default is `~/develop`), and pass `--author` to count one person's commits; a runner has no `git config user.email`, so without it every author counts. For example: `./tigergrid --json --git-root . --author dev@example.com > activity.json`.
+
+**Releasing:** bump `version` in `package.json`, commit, and push a matching tag (`git tag v1.2.0 && git push origin v1.2.0`). CI fails the run if the tag and `package.json` disagree, runs every job, and publishes the binaries it built and tested, with `SHA256SUMS`, as the GitHub Release for that tag. The npm package isn't published by CI.
+
+**Building:** `bun run build` compiles all three into `dist/`, plus `dist/SHA256SUMS`; `bun scripts/build.ts bun-linux-x64` builds a single target. `tigergrid --version` prints the version and the commit the binary was built from (`-dirty` if the working tree had uncommitted changes). Compiled binaries ignore `.env` and `bunfig.toml` files in the directory they run from. CI builds and smoke-tests each binary on matching hardware and attaches them to the run; on a tag, they become the release.
 
 `bun run smoke` does the same on your machine: it builds all three, runs the one matching your OS and CPU natively and the Linux ones in Docker containers of their architecture (`debian:bookworm-slim`, emulated where the CPU differs), and checks `--version`, the fixture numbers, the terminal output and an SVG in each cell style. `bun scripts/smoke.ts bun-linux-x64` checks a single target; CI runs it that way on each platform. Targets that can't run locally, like the macOS binary on Linux, are skipped.
 
